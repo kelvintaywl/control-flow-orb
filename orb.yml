@@ -1,0 +1,114 @@
+version: 2.1
+
+description: |
+    Collection of jobs and commands to help manipulate the order of workflows, jobs in your pipeline.
+
+display:
+    home_url: https://github.com/kelvintaywl/control-flow-orb
+    source_url: https://github.com/kelvintaywl/control-flow-orb
+
+commands: {}
+
+executors:
+  default:
+    docker:
+      - image: cimg/base:current
+    resource_class: small
+
+jobs:
+  approve-workflow:
+    description: |
+      Looks for and approve an approval job in a specific workflow in this current pipeline.
+      Useful for forcing workflow XYZ to run only after workflow ABC.
+      Assumes the approval job is at the start of workflow XYZ in this case.
+      See the `sequential-workflow` example for more information.
+
+      NOTE: this requires a valid CircleCI API token, and assumes this is available via the $CIRCLE_TOKEN environment variable.
+    parameters:
+      workflow-name:
+        type: string
+        description: |
+          Name of the workflow to look up against.
+          Assumes the workflow name is unique.
+          Otherwise, it will look up the first workflow in this pipeline that matches this name.
+      job-name:
+        type: string
+        description: |
+          Name of the approval job in workflow to approve
+    executor: default
+    steps:
+      - run:
+          name: Find Pipeline ID
+          command: |
+            curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${CIRCLE_WORKFLOW_ID}" > workflow.json
+            PIPELINE_ID=$(jq -r '.pipeline_id' workflow.json)
+            echo "export PIPELINE_ID='${PIPELINE_ID}'" >> $BASH_ENV
+
+            rm workflow.json
+      - run:
+          name: Find Workflow ID for << parameters.workflow-name >>
+          command: |
+            curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/pipeline/${PIPELINE_ID}/workflow" > workflows.json
+            WORKFLOW_ID=$(jq -r '.items | map(select(.name == "<< parameters.workflow-name >>")) | .[0].id' workflows.json)
+            echo "export WORKFLOW_ID='${WORKFLOW_ID}'" >> $BASH_ENV
+
+            rm workflows.json
+      - run:
+          name: Find Job ID for << parameters.job-name >>
+          command: |
+            curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${WORKFLOW_ID}/job" > jobs.json
+            APPROVAL_JOB_ID=$(jq -r '.items | map(select(.name == "<< parameters.job-name >>" and .type == "approval")) | .[0].id' jobs.json)
+            echo "export APPROVAL_JOB_ID='${APPROVAL_JOB_ID}'" >> $BASH_ENV
+
+            rm jobs.json
+      - run:
+          name: Approve job
+          command: |
+            curl -X POST -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${WORKFLOW_ID}/approve/${APPROVAL_JOB_ID}" | jq .
+
+examples:
+  sequential-workflow:
+    description: |
+      Uses control-flow/approve-workflow job, an approval job to control the order between 2 workflows.
+
+      In this example, we want to run workflow bbb only after aaa.
+      We add an approval job (start) as the first job for workflow bbb.
+      We then add the control-flow/approve-workflow job as the final job in workflow aaa.
+
+      Essentially, workflow bbb is on-hold until workflow aaa approves the approval job in workflow bbb.
+    usage:
+      version: "2.1"
+      
+      orbs:
+        flow: kelvintaywl/control-flow@1
+
+      jobs:
+        noop:
+          docker:
+            - image: cimg/base:current
+          resource_class: small
+          steps:
+            - run: echo "noop"
+      
+      workflows:
+        aaa:
+          jobs:
+            - noop:
+                name: build
+            - flow/approve-workflow:
+                workflow-name: bbb
+                job-name: start
+                requires:
+                  - build
+                context:
+                  # ASSUMPTION: this org context provides a $CIRCLE_TOKEN env var
+                  # which contains a valid CircleCI API token as its value.
+                  - circleci-api
+        bbb:
+          jobs:
+            - start:
+                type: approval
+            - noop:
+                name: deploy
+                requires:
+                  - start
