@@ -34,7 +34,9 @@ jobs:
       job-name:
         type: string
         description: |
-          Name of the approval job in workflow to approve
+          Name of the approval job in workflow to approve.
+          Assumes the job name is unique.
+          Otherwise, it will look up the first approval job in the workflow that matches this name.
     executor: default
     steps:
       - run:
@@ -42,6 +44,8 @@ jobs:
           command: |
             curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${CIRCLE_WORKFLOW_ID}" > workflow.json
             PIPELINE_ID=$(jq -r '.pipeline_id' workflow.json)
+
+            echo "Set current pipeline ID to PIPELINE_ID env var"
             echo "export PIPELINE_ID='${PIPELINE_ID}'" >> $BASH_ENV
 
             rm workflow.json
@@ -50,6 +54,8 @@ jobs:
           command: |
             curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/pipeline/${PIPELINE_ID}/workflow" > workflows.json
             WORKFLOW_ID=$(jq -r '.items | map(select(.name == "<< parameters.workflow-name >>")) | .[0].id' workflows.json)
+
+            echo "Set target workflow ID to WORKFLOW_ID env var"
             echo "export WORKFLOW_ID='${WORKFLOW_ID}'" >> $BASH_ENV
 
             rm workflows.json
@@ -58,11 +64,13 @@ jobs:
           command: |
             curl -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${WORKFLOW_ID}/job" > jobs.json
             APPROVAL_JOB_ID=$(jq -r '.items | map(select(.name == "<< parameters.job-name >>" and .type == "approval")) | .[0].id' jobs.json)
+
+            echo "Set target approval job ID to APPROVAL_JOB_ID env var"
             echo "export APPROVAL_JOB_ID='${APPROVAL_JOB_ID}'" >> $BASH_ENV
 
             rm jobs.json
       - run:
-          name: Approve job
+          name: Approve << parameters.job-name >> job in << parameters.workflow-name >> workflow
           command: |
             curl -X POST -H "Circle-Token: $CIRCLE_TOKEN" "https://circleci.com/api/v2/workflow/${WORKFLOW_ID}/approve/${APPROVAL_JOB_ID}" | jq .
 
@@ -80,7 +88,7 @@ examples:
       version: "2.1"
       
       orbs:
-        flow: kelvintaywl/control-flow@1
+        flow: kelvintaywl/control-flow@0.1
 
       jobs:
         noop:
